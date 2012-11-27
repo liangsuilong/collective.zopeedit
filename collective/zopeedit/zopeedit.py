@@ -28,20 +28,15 @@ except NameError:
     system_path = os.path.realpath( os.path.dirname( sys.argv[0] ) )
 
 # Open the VERSION file for reading.
-if os.path.exists(os.path.join(system_path,'docs/VERSION.txt')):
+if os.path.isfile(os.path.join(system_path, 'docs/VERSION.txt')) is True:
     f=open(os.path.join(system_path,'docs/VERSION.txt'), 'r')
-elif os.path.exists(os.path.join(system_path,'../../docs/VERSION.txt')):
-    # zopeedit is not properly installed : try uninstalled path
-    f=open(os.path.join(system_path,'../../docs/VERSION.txt'), 'r')
-elif os.path.exists(os.path.join(system_path,'collective/zopeedit/docs/VERSION.txt')):
+elif os.path.isfile(os.path.join(system_path, 'collective/zopeedit/docs/VERSION.txt')) is True:
     f=open(os.path.join(system_path,'collective/zopeedit/docs/VERSION.txt'), 'r')
+elif os.path.isfile(os.path.join(system_path, '../../docs/VERSION.txt')) is True:
+    f=open(os.path.join(system_path,'../../docs/VERSION.txt'), 'r')
 else:
-    f = None
-
-if f is not None:
-    __version__ = f.readline()[:-1]
-else:
-    __version__ = "0"
+    raise IOError, "Could not find VERSION.txt"
+__version__ = f.readline()[:-1]
 f.close()
 
 
@@ -63,10 +58,19 @@ if win32:
     from os import startfile
     # import pywin32 stuff first so it never looks into system32
     import pythoncom, pywintypes
+    from win32com.shell import shell as win32shell
+    from win32com.shell import shellcon as win32shellcon
+
+    def get_path (folder_id):
+        return win32shell.SHGetPathFromIDList (win32shell.SHGetSpecialFolderLocation (0, folder_id))
+   
+    MY_DOCUMENTS = get_path (win32shellcon.CSIDL_PERSONAL)
 
     # prevent warnings from being turned into errors by py2exe
     import warnings
     warnings.filterwarnings('ignore')
+else:
+    MY_DOCUMENTS = os.path.expanduser('~')
 
 # Mac OSX specifics
 if osx:
@@ -75,7 +79,6 @@ if osx:
     from LaunchServices import LSOpenFSRef
 
 import re
-import subprocess
 from subprocess import Popen, call
 import time
 import rfc822
@@ -108,14 +111,19 @@ LOG_LEVELS = {'debug': logging.DEBUG,
               'error': logging.ERROR,
               'critical': logging.CRITICAL}
 
+#logging.basicConfig()
 logger = logging.getLogger('zopeedit')
 log_file = None
 
 # Retrieve locale from system
 lc, encoding = locale.getdefaultlocale()
-if lc is None:
-    lc="en_EN"
-    encoding="UTF-8"
+
+# zopechina start
+# reset system encoding to avoid any encoding problem
+reload(sys)
+sys.setdefaultencoding(encoding)
+# zopechina end
+
 
 # Should work without that but it seems to be here most of time
 gettext.bindtextdomain( APP_NAME, local_path )
@@ -255,21 +263,6 @@ class ExternalEditor:
             m = rfc822.Message(in_f)
 
             self.metadata = m.dict.copy()
-
-            # Special care for Dexterity Item content type, which
-            # is encapsuled as its own rfc2822 message by plone.rfc822
-            if self.metadata["meta_type"] == "Dexterity Item":
-                import email, email.header, StringIO
-                msg = email.message_from_string(in_f.read())
-                self.dexterity = dict(msg.items())
-                self.metadata["title"] = self.dexterity.get(
-                    "title", self.metadata.get("title", ""))
-                self.metadata["content_type"] = self.dexterity.get(
-                    "Content-Type", self.metadata.get("content_type", "text/plain"))
-                in_f = StringIO.StringIO()
-                in_f.write(msg.get_payload(decode=True))
-                in_f.seek(0)
-
             logger.debug("metadata: %s" % repr(self.metadata))
 
             # Parse the incoming url
@@ -289,7 +282,6 @@ class ExternalEditor:
                 self.last_modified = http_date_to_datetime(last_modified)
                 logger.debug('last_modified: %s' % str(self.last_modified))
 
-
             # Retrieve original title
             self.title = self.metadata["title"].decode(self.server_charset).\
                          encode(self.client_charset,'ignore')
@@ -305,18 +297,37 @@ class ExternalEditor:
                 content_file = '-' + urllib.unquote(
                                self.path.split('/')[-1]).replace(' ','_')
 
+            # zopechina pak start
+            content_file = content_file.decode(self.server_charset).encode(self.client_charset,'ignore')
+            # zopechina pak end
+
             extension = self.options.get('extension')
             if extension and not content_file.endswith(extension):
                 content_file = content_file + extension
-            if self.options.has_key('temp_dir'):
-                while 1:
-                    temp = os.path.expanduser(self.options['temp_dir'])
-                    temp = os.tempnam(temp)
-                    content_file = '%s%s' % (temp, content_file)
-                    if not os.path.exists(content_file):
-                        break
-            else:
-                content_file = mktemp(content_file,'rw')
+            temp_dir = self.options.get('temp_dir', os.path.join(MY_DOCUMENTS, 'edoeditor'))
+	    temp_dir = os.path.expanduser(temp_dir)
+	    if not os.path.exists(temp_dir):
+	        os.makedirs(temp_dir)
+
+	    # HACK environ to make os.tempnam work
+            _tmp, _tmpdir = '', ''
+            if 'TMP' in os.environ: 
+                _tmp = os.environ['TMP']
+                del os.environ['TMP']
+            if 'TMPDIR' in os.environ: 
+                _tmpdir = os.environ['TMPDIR']
+                del os.environ['TMPDIR']
+
+            while 1:
+                temp = os.tempnam(temp_dir)
+                temp = '%s%s' % (temp, content_file)
+                if not os.path.exists(temp):
+                    content_file = temp
+                    break
+
+	    # restore os.environ
+	    if _tmpdir: os.environ['TMPDIR'] = _tmpdir
+	    if _tmp: os.environ['TMP'] = _tmp
 
             logger.debug('Destination filename will be: %r.', content_file)
 
@@ -327,16 +338,15 @@ class ExternalEditor:
             body_f.close()
             in_f.close()
 
-            # cleanup the input file if the clean_up option is active
-            if self.clean_up:
-                try:
-                    logger.debug('Cleaning up %r.', self.input_file)
-                    os.chmod(self.input_file, 0777)
-                    os.remove(self.input_file)
-                except OSError:
-                    logger.exception('Failed to clean up %r.',
+            # allways cleanup the input file
+            try:
+                logger.debug('Cleaning up %r.', self.input_file)
+                os.chmod(self.input_file, 0777)
+                os.remove(self.input_file)
+            except OSError:
+                logger.exception('Failed to clean up %r.',
                                      self.input_file)
-                    pass # Sometimes we aren't allowed to delete it
+                pass # Sometimes we aren't allowed to delete it
 
             # See if ssl is available
             if self.ssl:
@@ -350,16 +360,13 @@ class ExternalEditor:
             self.lock_token = None
             self.did_lock = False
         except:
-            # for security, always delete the input file even if
-            # a fatal error occurs, unless explicitly stated otherwise
-            # in the config file
-            if getattr(self, 'clean_up', 1):
-                try:
-                    exc, exc_data = sys.exc_info()[:2]
-                    os.remove(self.input_file)
-                except OSError:
-                    # Sometimes we aren't allowed to delete it
-                    raise exc, exc_data
+            # for security, always delete the input file
+            try:
+                exc, exc_data = sys.exc_info()[:2]
+                os.remove(self.input_file)
+            except OSError:
+                # Sometimes we aren't allowed to delete it
+                raise exc, exc_data
             raise
 
     def __del__(self):
@@ -368,7 +375,7 @@ class ExternalEditor:
 
     def loadConfig(self):
         """ Read the configuration file and set default values """
-        config_path = self.getConfigPath()
+        config_path = self.getConfigPath(True)
         self.config = Configuration(config_path)
         # Get all configuration options
         self.options = self.config.getAllOptions(
@@ -395,7 +402,7 @@ class ExternalEditor:
                                                'notepad')
         else:
             self.defaulteditors = self.options.get('defaulteditors',
-                                               'gedit;kedit;gvim;vim;emacs;nano')
+                                               'gedit;kedit;gvim;emacs;vim;nano')
         logger.debug("loadConfig: defaulteditors: %s" % self.defaulteditors)
 
         # Get autoproxy option : do we want to configure proxy from system ?
@@ -453,11 +460,11 @@ class ExternalEditor:
         logger.debug("loadConfig: manage_locks: %s" % self.manage_locks)
 
         self.lock_timeout = self.options.get('lock_timeout', 
-                                             '86400')
+                                             'Second-86400')
         logger.debug("loadConfig: lock_timeout: %s" % self.lock_timeout)
 
         # Should we clean-up temporary files ?
-        self.clean_up = int(self.options.get('cleanup_files', 1))
+        self.clean_up = int(self.options.get('cleanup_files', 0))
         logger.debug("loadConfig: cleanup_files: %s" % self.clean_up)
 
         self.save_interval = float(self.options.get('save_interval',2))
@@ -766,10 +773,11 @@ class ExternalEditor:
             else:
                 file_insert = '$1'
 
-            if command.find(file_insert) > -1:
-                command = command.replace(file_insert, self.content_file)
-            else:
-                command = '%s %s' % (command, self.content_file)
+            if command is not None:
+                if command.find(file_insert) > -1:
+                    command = command.replace(file_insert, self.content_file)
+                else:
+                    command = '%s "%s"' % (command, self.content_file)
 
             logger.info('launch: Launching EditorProcess with: %r', command)
             self.editor = EditorProcess(command, 
@@ -952,17 +960,6 @@ class ExternalEditor:
         if self.lock_token is not None:
             headers['If'] = '<%s> (<%s>)' % (self.path, self.lock_token)
 
-        # Special care for Dexterity Item content type, which
-        # is encapsuled as its own rfc2822 message by plone.rfc822
-        if self.metadata["meta_type"] == "Dexterity Item":
-            import email
-            msg = email.message.Message()
-            for key in self.dexterity:
-                msg.add_header(key, self.dexterity[key])
-            msg.set_payload(body)
-            email.encoders.encode_base64(msg)
-            body = str(msg)
-            
         response = self.zopeRequest('PUT', headers, body)
         # Don't keep the body around longer than we need to
         del body
@@ -1483,7 +1480,7 @@ class ExternalEditor:
                         logger.debug("sts : %s" % sts)
                 
 
-title = 'Zope External Editor'
+title = _('Zope External Editor')
 
 def askRetryAfterError(response, operation, message=''):
     """Dumps response data"""
@@ -1587,16 +1584,11 @@ class EditorProcess:
     def isFileOpen(self):
         """Test if File is locked (filesystem)"""
         logger.debug("test if the file edited is locked by filesystem")
-        command = '/bin/fuser'
-        if not os.path.exists(command):
-            command = '/usr/bin/fuser'
+        isFileOpenNum = call(['lsof' , 
+                            self.contentfile])
+                            #re.split(self.arg_re, self.command.strip())[-1] ])
+        return isFileOpenNum == 0
 
-        process = Popen([command , self.command.split(' ')[-1]], 
-                        stdout=subprocess.PIPE)
-        process.wait()
-        fileOpenWith = process.stdout.read()
-        return fileOpenWith != ''
-        
     def isPidUp(self):
         """Test PID"""
         logger.debug("test if PID is up")
@@ -1631,7 +1623,6 @@ class EditorProcess:
         """Returns true if the editor process is still alive
            is_alive_by_file stores whether we check file or pid
            file check has priority"""
-
         if self.starting:
             logger.info("isAlive : still starting. Counter : %s" %  \
                          self.is_alive_counter)
@@ -1649,11 +1640,11 @@ class EditorProcess:
                                         i, 
                                         self.methods[i].__doc__))
                 self.selected_method = i
-                self.nb_methods = i
-                self.lock_detected = True
+                #self.nb_methods = i
+                #self.lock_detected = True
                 return True
         logger.info("isAlive : no edition detected.")
-        if self.starting and not self.lock_detected:
+	if self.starting: # and not self.lock_detected:
             logger.debug("isAlive : still in the startup process :"
                          "continue.")
             return True
@@ -1838,7 +1829,7 @@ default_configuration += """
 # Duration of file Lock : 1 day = 86400 seconds
 # If this option is removed, fall back on 'infinite' zope default
 # Default 'infinite' value is about 12 minutes
-#lock_timeout = 86400
+#lock_timeout = Second-86400
 
 # Proxy address
 #proxy = http://www.myproxy.com:8080

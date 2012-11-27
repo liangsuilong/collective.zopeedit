@@ -27,11 +27,13 @@ except ImportError:
     if sys.platform == 'win32':
         raise
 
+# OPTIONS = {'argv_emulation': True}
+
 install_requires = ['setuptools']
 if sys.platform == 'darwin':
-    install_requires.extend([
-        'pyobjc-core',
+    install_requires.extend(['pyobjc-core',
         'pyobjc-framework-LaunchServices',
+        'pyobjc-framework-Cocoa',
     ])
 
 packages = find_packages(exclude=['ez_setup'])
@@ -51,7 +53,7 @@ def data_files():
     return files
 
 
-setup(name='collective.zopeedit',
+setup(name='EDOExternalEditor',
       app=[os.path.join('collective', 'zopeedit', 'zopeedit.py')],
       version=version,
       description="ZopeEdit : External Editor Client",
@@ -67,7 +69,7 @@ setup(name='collective.zopeedit',
       keywords='zope plone externaleditor zopeedit edition',
       author='Thierry Benita - atReal',
       author_email='contact@atreal.net',
-      url='https://github.com/collective/collective.zopeedit/',
+      url='http://svn.plone.org/svn/collective/collective.zopeedit/',
       license='ZPL',
       packages=packages,
       namespace_packages=['collective'],
@@ -84,7 +86,11 @@ setup(name='collective.zopeedit',
               'script': os.path.join('collective','zopeedit','zopeedit.py'),
               'icon_resources': [(1, os.path.join('collective','zopeedit','win32','zopeedit.ico'))]
               }],
+      setup_requires=['py2app'],
       options={"py2exe": {"packages": ["encodings", "Plugins", "win32com"]},
                "py2app" : {'argv_emulation':True},
               },
+
       )
+
+
